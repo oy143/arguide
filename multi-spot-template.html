@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>智影校园 AR 导览</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            overflow: hidden; background: #000; touch-action: none;
+        }
+        #hint {
+            position: absolute; top: 20px; left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7); color: #fff;
+            padding: 12px 24px; border-radius: 30px;
+            font-size: 16px; z-index: 10; pointer-events: none;
+            transition: all 0.4s;
+        }
+        #hint.found { background: rgba(76,175,80,0.85); animation: pulse 0.5s ease; }
+        @keyframes pulse {
+            0%,100% { transform: translateX(-50%) scale(1); }
+            50% { transform: translateX(-50%) scale(1.08); }
+        }
+        @keyframes cardAppear {
+            0% { opacity: 0; transform: scale(0.5) translateY(30px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        /* 粒子动画 */
+        .particles { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; overflow: hidden; }
+        .particle { position: absolute; width: 3px; height: 3px; background: rgba(0,255,255,0.8); border-radius: 50%; }
+        .particle:nth-child(1) { left: 10%; animation: float 3s infinite ease-in; }
+        .particle:nth-child(2) { left: 25%; animation: float 3.5s 0.5s infinite ease-in; }
+        .particle:nth-child(3) { left: 40%; animation: float 4s 1s infinite ease-in; }
+        .particle:nth-child(4) { left: 55%; animation: float 2.5s 1.5s infinite ease-in; }
+        .particle:nth-child(5) { left: 70%; animation: float 4.5s 2s infinite ease-in; }
+        .particle:nth-child(6) { left: 85%; animation: float 3s 0.3s infinite ease-in; }
+        @keyframes float {
+            0% { bottom: -10px; opacity: 0; transform: translateX(0); }
+            20% { opacity: 1; }
+            80% { opacity: 1; }
+            100% { bottom: 110%; opacity: 0; transform: translateX(20px); }
+        }
+        /* 迷你地图 */
+        #miniMap {
+            position: absolute; bottom: 20px; right: 10px; width: 120px;
+            background: rgba(0,0,0,0.75); border-radius: 16px; padding: 8px;
+            z-index: 20; cursor: pointer; transition: all 0.3s;
+        }
+        #miniMap img { width: 100%; border-radius: 8px; }
+        #fullMap {
+            display: none; position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9); z-index: 100;
+            justify-content: center; align-items: center; flex-direction: column;
+        }
+        #fullMap img { max-width: 90%; max-height: 80%; border-radius: 16px; }
+    </style>
+</head>
+<body>
+    <div id="hint">📷 请将摄像头对准识别图</div>
+    <div id="ar-overlay" style="display:none; position:absolute; left:50%; bottom:90px; transform:translateX(-50%); width:calc(100% - 40px); max-width:360px; background:rgba(0,0,0,0.75); border-radius:22px; padding:16px 18px; color:#fff; z-index:15; backdrop-filter:blur(12px); box-shadow:0 20px 40px rgba(0,0,0,0.35);">
+        <div id="overlay-title" style="font-size:18px; font-weight:700; margin-bottom:8px; line-height:1.2;"></div>
+        <div id="overlay-description" style="font-size:13px; line-height:1.6; max-height:108px; overflow:hidden; margin-bottom:12px;"></div>
+        <button id="audioBtnOverlay" onclick="toggleAudio(currentSpotIndex)" style="width:100%; background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.35); color:#fff; padding:12px 14px; border-radius:18px; font-size:14px; cursor:pointer;">
+            🔊 播放语音讲解
+        </button>
+    </div>
+
+    <!-- 迷你地图 -->
+    <div id="miniMap" onclick="toggleMap()">
+        <img src="./assets/campus-map.png" alt="校园地图" onerror="this.style.display='none'; this.parentElement.querySelector('div').textContent='🗺️ 地图（待添加）'">
+        <div style="color:#fff; font-size:10px; text-align:center; margin-top:4px;">🗺️ 校园地图</div>
+    </div>
+    <!-- 全屏地图 -->
+    <div id="fullMap" onclick="toggleMap()">
+        <img src="./assets/campus-map.png" alt="校园地图" onerror="this.style.display='none'">
+        <div style="color:#fff; font-size:14px; background:rgba(0,0,0,0.6); padding:8px 20px; border-radius:20px; margin-top:10px;">点击任意处关闭</div>
+    </div>
+
+    <!-- A-Frame（已本地打包，避免学校网络拦截 CDN） -->
+    <script src="./vendor/aframe-1.5.0.min.js"></script>
+    <!-- MindAR（已本地打包） -->
+    <script src="./vendor/mindar-image-aframe-1.2.5.prod.js"></script>
+
+    <script>
+        // ==========================================
+        //  📝 学生修改区：在这里编辑你的导览内容！
+        // ==========================================
+
+        const spots = [
+            {
+                title: "🏫 校门",
+                emoji: "🏛️",
+                description: "欢迎来到我们的校园！这座校门见证了无数学生的成长。校门上的校徽代表了学校的核心精神：勤奋、求实、创新。",
+                funFact: "💡 你知道吗？校门上的校徽里藏着一本书的图案——象征着知识的力量。",
+                audioFile: "./audio/spot0.mp3",
+                color: "#2196F3",
+                nextSpot: 1,
+                nextSpotName: "操场",
+                nextSpotDirection: "进门后直走50米，右手边 👉"
+            },
+            {
+                title: "⚽ 操场",
+                emoji: "🏟️",
+                description: "这是同学们最喜欢的地方！标准的田径跑道环绕着翠绿的足球场。每天早晨，这里都有晨跑的身影。每年的运动会都在这里举行。",
+                funFact: "💡 操场跑道一圈正好是400米——每天跑5圈就是2公里！",
+                audioFile: "./audio/spot1.mp3",
+                color: "#4CAF50",
+                nextSpot: 2,
+                nextSpotName: "教学楼",
+                nextSpotDirection: "操场北边那栋六层的白色大楼 🏢"
+            },
+            {
+                title: "📚 教学楼",
+                emoji: "🏢",
+                description: "这栋六层大楼是校园里最忙碌的地方。每天有上千名学生在这里上课。二楼有一个科学长廊，展示着同学们的创意作品。",
+                funFact: "💡 三楼拐角处藏着一个'秘密图书角'，是往届学长留给学弟学妹的礼物。",
+                audioFile: "./audio/spot2.mp3",
+                color: "#FF9800",
+                nextSpot: 3,
+                nextSpotName: "图书馆",
+                nextSpotDirection: "教学楼后面那栋圆顶建筑 📖"
+            },
+            {
+                title: "📖 图书馆",
+                emoji: "🏫",
+                description: "圆顶设计让这里成为校园的标志性建筑。馆藏图书超过五万册。阳光透过穹顶洒下来，是最适合阅读的地方。",
+                funFact: "💡 图书馆最受欢迎的书是《哈利波特》系列——已经被借阅超过1000次！",
+                audioFile: "./audio/spot3.mp3",
+                color: "#9C27B0",
+                nextSpot: 4,
+                nextSpotName: "食堂",
+                nextSpotDirection: "图书馆出门左转，闻到香味就到了 🍜"
+            },
+            {
+                title: "🍽️ 食堂",
+                emoji: "🍜",
+                description: "每到中午，这里就飘出诱人的香味。食堂的阿姨们每天为全校师生准备营养美味的午餐。每周五的'特色菜日'最受期待！",
+                funFact: "💡 食堂最受欢迎的菜是红烧肉——每周二中午必定排队最长！",
+                audioFile: "./audio/spot4.mp3",
+                color: "#F44336",
+                nextSpot: 0,
+                nextSpotName: "回到校门",
+                nextSpotDirection: "参观完毕！沿着主路直走就能回到校门 🚶"
+            }
+        ];
+
+        // ==========================================
+        //  🔊 音频控制
+        // ==========================================
+        let currentAudio = null;
+
+        function speakSpot(spotIndex) {
+            const spot = spots[spotIndex];
+            if (!spot || !('speechSynthesis' in window)) return false;
+            speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(spot.title + '。' + spot.description);
+            utterance.lang = 'zh-CN';
+            utterance.rate = 0.9;
+            speechSynthesis.speak(utterance);
+            return true;
+        }
+
+        function toggleAudio(spotIndex) {
+            if (spotIndex === null || spotIndex === undefined) return;
+            const spot = spots[spotIndex];
+            if (!spot) return;
+            if (!spot.audioFile) {
+                speakSpot(spotIndex);
+                return;
+            }
+            
+            // 如果有正在播放的不同音频，先停掉它并更新按钮状态
+            if (currentAudio && !currentAudio.paused) {
+                const prevIndex = parseInt(currentAudio.dataset.spotIndex, 10);
+                if (prevIndex !== spotIndex) {
+                    const prevBtn = document.getElementById('audioBtn' + prevIndex);
+                    if (prevBtn) {
+                        prevBtn.textContent = '🔊 播放语音讲解';
+                        prevBtn.style.background = 'rgba(255,255,255,0.25)';
+                    }
+                    const prevOverlayBtn = document.getElementById('audioBtnOverlay');
+                    if (prevOverlayBtn && currentSpotIndex === prevIndex) {
+                        prevOverlayBtn.textContent = '🔊 播放语音讲解';
+                        prevOverlayBtn.style.background = 'rgba(255,255,255,0.25)';
+                    }
+                    currentAudio.pause();
+                }
+            }
+            
+            // 创建或获取音频元素
+            let audioEl = document.getElementById('audio-' + spotIndex);
+            if (!audioEl) {
+                audioEl = document.createElement('audio');
+                audioEl.id = 'audio-' + spotIndex;
+                audioEl.dataset.spotIndex = spotIndex;
+                audioEl.src = spot.audioFile;
+                audioEl.preload = 'auto';
+                document.body.appendChild(audioEl);
+            }
+            
+            const btn = document.getElementById('audioBtn' + spotIndex);
+            const overlayBtn = document.getElementById('audioBtnOverlay');
+            
+            const updateButtons = (text, bg) => {
+                if (btn) {
+                    btn.textContent = text;
+                    btn.style.background = bg;
+                }
+                if (overlayBtn && currentSpotIndex === spotIndex) {
+                    overlayBtn.textContent = text;
+                    overlayBtn.style.background = bg;
+                }
+            };
+            
+            if (audioEl.paused) {
+                audioEl.play().then(() => {
+                    currentAudio = audioEl;
+                    updateButtons('⏸️ 暂停', 'rgba(255,87,34,0.7)');
+                }).catch(() => {
+                    const usedTts = speakSpot(spotIndex);
+                    updateButtons(usedTts ? '🔊 浏览器朗读中' : '⚠️ 请先添加音频', usedTts ? 'rgba(76,175,80,0.65)' : 'rgba(244,67,54,0.75)');
+                });
+            } else {
+                audioEl.pause();
+                updateButtons('🔊 播放语音讲解', 'rgba(255,255,255,0.25)');
+            }
+            
+            audioEl.onended = () => {
+                updateButtons('🔊 重新播放', 'rgba(255,255,255,0.25)');
+            };
+        }
+
+        // ==========================================
+        //  🗺️ 地图控制
+        // ==========================================
+        function toggleMap() {
+            const fullMap = document.getElementById('fullMap');
+            fullMap.style.display = (fullMap.style.display === 'flex') ? 'none' : 'flex';
+        }
+
+        let currentSpotIndex = null;
+
+        function setOverlayCard(spotIndex) {
+            const overlay = document.getElementById('ar-overlay');
+            const title = document.getElementById('overlay-title');
+            const description = document.getElementById('overlay-description');
+            const button = document.getElementById('audioBtnOverlay');
+            const spot = spots[spotIndex];
+            if (!overlay || !spot) return;
+            currentSpotIndex = spotIndex;
+            title.textContent = spot.title;
+            description.textContent = spot.description;
+            button.textContent = '🔊 播放语音讲解';
+            button.style.background = 'rgba(255,255,255,0.25)';
+            overlay.style.display = 'block';
+        }
+
+        function clearOverlayCard() {
+            const overlay = document.getElementById('ar-overlay');
+            if (!overlay) return;
+            currentSpotIndex = null;
+            overlay.style.display = 'none';
+        }
+
+        // ==========================================
+        //  🎨 创建 AR 卡片
+        // ==========================================
+        function createARCard(spotIndex) {
+            const spot = spots[spotIndex];
+            if (!spot) return document.createElement('div');
+
+            const card = document.createElement('div');
+            card.innerHTML = `
+                <div style="
+                    background: linear-gradient(135deg, ${spot.color}dd 0%, ${spot.color}88 100%);
+                    border: 1px solid rgba(255,255,255,0.4);
+                    border-radius: 20px;
+                    padding: 24px;
+                    width: 280px;
+                    color: #fff;
+                    text-align: center;
+                    box-shadow: 0 0 30px ${spot.color}99, 0 0 60px ${spot.color}44, inset 0 0 20px rgba(255,255,255,0.05);
+                    backdrop-filter: blur(10px);
+                    animation: cardAppear 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                    position: relative;
+                    overflow: hidden;
+                ">
+                    <!-- 全息粒子 -->
+                    <div class="particles">
+                        <div class="particle"></div><div class="particle"></div>
+                        <div class="particle"></div><div class="particle"></div>
+                        <div class="particle"></div><div class="particle"></div>
+                    </div>
+                    
+                    <!-- 卡片内容 -->
+                    <div style="font-size: 40px; margin-bottom: 8px; position: relative; z-index: 1;">${spot.emoji}</div>
+                    <h2 style="font-size: 20px; margin: 8px 0; text-shadow: 0 2px 4px rgba(0,0,0,0.3); position: relative; z-index: 1;">${spot.title}</h2>
+                    <div style="
+                        background: rgba(255,255,255,0.15);
+                        border-radius: 12px;
+                        padding: 14px;
+                        margin: 10px 0;
+                        font-size: 14px;
+                        line-height: 1.6;
+                        text-align: left;
+                        position: relative;
+                        z-index: 1;
+                    ">${spot.description}</div>
+                    <p style="font-size: 12px; opacity: 0.9; margin-top: 6px; font-style: italic; position: relative; z-index: 1;">
+                        ${spot.funFact}
+                    </p>
+                    <button onclick="toggleAudio(${spotIndex})" id="audioBtn${spotIndex}"
+                        style="
+                            background: rgba(255,255,255,0.25);
+                            border: 1px solid rgba(255,255,255,0.5);
+                            color: #fff;
+                            padding: 8px 20px;
+                            border-radius: 20px;
+                            font-size: 14px;
+                            margin-top: 10px;
+                            cursor: pointer;
+                            position: relative;
+                            z-index: 1;
+                        ">
+                        🔊 播放语音讲解
+                    </button>
+                    
+                    <!-- 下一站导航 -->
+                    <div style="
+                        margin-top: 12px;
+                        padding: 10px;
+                        background: rgba(255,255,255,0.12);
+                        border-radius: 10px;
+                        font-size: 12px;
+                        text-align: left;
+                        position: relative;
+                        z-index: 1;
+                    ">
+                        <div style="opacity: 0.7; font-size: 10px;">📍 推荐下一站</div>
+                        <div style="font-weight: bold; margin: 2px 0;">${spot.nextSpotName}</div>
+                        <div style="font-size: 11px; opacity: 0.8;">${spot.nextSpotDirection}</div>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        // Helper: 中文友好换行
+        function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+            const chars = Array.from(text);
+            let line = '';
+            let yy = y;
+            for (const ch of chars) {
+                const test = line + ch;
+                if (ctx.measureText(test).width > maxWidth && line.length > 0) {
+                    ctx.fillText(line, x, yy);
+                    line = ch;
+                    yy += lineHeight;
+                } else {
+                    line = test;
+                }
+            }
+            ctx.fillText(line, x, yy);
+        }
+
+        // Draw a card for a given spot into a canvas (used as a texture for a-plane)
+        function drawCardToCanvas(spotIndex, canvas) {
+            const spot = spots[spotIndex];
+            if (!spot || !canvas) return;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width = 1024;
+            const H = canvas.height = 640;
+            ctx.clearRect(0, 0, W, H);
+
+            // 背景渐变
+            const grad = ctx.createLinearGradient(0, 0, W, H);
+            grad.addColorStop(0, spot.color || '#2196F3');
+            grad.addColorStop(1, '#222');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, W, H);
+
+            // 半透明面板
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.fillRect(60, 40, W - 120, H - 80);
+
+            // Emoji
+            ctx.font = 'bold 72px "Segoe UI Emoji", "Microsoft YaHei", sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillStyle = '#fff';
+            ctx.fillText(spot.emoji || '', 100, 140);
+
+            // 标题
+            ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(spot.title || '', 180, 130);
+
+            // 描述区
+            ctx.fillStyle = 'rgba(255,255,255,0.12)';
+            ctx.fillRect(100, 170, W - 200, 320);
+
+            // 描述文字（换行）
+            ctx.fillStyle = '#fff';
+            ctx.font = '26px "Microsoft YaHei", sans-serif';
+            ctx.textAlign = 'left';
+            wrapText(ctx, spot.description || '', 120, 210, W - 260, 38);
+
+            // 趣味知识
+            ctx.font = 'italic 26px "Microsoft YaHei", sans-serif';
+            ctx.fillStyle = '#fff59d';
+            ctx.textAlign = 'center';
+            ctx.fillText(spot.funFact || '', W / 2, 520);
+        }
+
+        // ==========================================
+        //  🎯 MindAR 多点位核心逻辑
+        // ==========================================
+        document.addEventListener('DOMContentLoaded', () => {
+            const sceneEl = document.querySelector('a-scene');
+            const hint = document.getElementById('hint');
+
+            // 为每个 spot 创建一个隐藏 canvas（作为 a-plane 的贴图）和对应的 a-entity + a-plane
+            for (let i = 0; i < spots.length; i++) {
+                // 隐藏 canvas
+                const canvas = document.createElement('canvas');
+                canvas.id = 'canvas-' + i;
+                canvas.width = 1024;
+                canvas.height = 640;
+                canvas.style.display = 'none';
+                document.body.appendChild(canvas);
+                drawCardToCanvas(i, canvas);
+
+                // 创建 anchor（MindAR 追踪目标）
+                const anchor = document.createElement('a-entity');
+                anchor.setAttribute('mindar-image-target', 'targetIndex: ' + i);
+                anchor.setAttribute('data-spot-index', i);
+
+                // 创建 a-plane 并使用 canvas 作为纹理
+                const plane = document.createElement('a-plane');
+                plane.setAttribute('id', 'plane-' + i);
+                plane.setAttribute('position', '0 0 0');
+                plane.setAttribute('width', '1.6');
+                plane.setAttribute('height', '1.0');
+                plane.setAttribute('material', `src: #canvas-${i}; shader: flat; transparent: true`);
+                plane.setAttribute('visible', 'false');
+
+                anchor.appendChild(plane);
+
+                anchor.addEventListener('targetFound', function() {
+                    const idx = parseInt(this.getAttribute('data-spot-index'));
+                    const pl = document.getElementById('plane-' + idx);
+                    if (pl) pl.setAttribute('visible', 'true');
+                    hint.textContent = '✨ 发现：' + spots[idx].title;
+                    hint.className = 'found';
+                    setOverlayCard(idx);
+                    // 尝试更新贴图
+                    setTimeout(() => {
+                        const aframePlane = pl && pl.getObject3D && pl.getObject3D('mesh');
+                        if (aframePlane && aframePlane.material && aframePlane.material.map) {
+                            aframePlane.material.map.needsUpdate = true;
+                        }
+                    }, 100);
+                });
+
+                anchor.addEventListener('targetLost', function() {
+                    const idx = parseInt(this.getAttribute('data-spot-index'));
+                    const pl = document.getElementById('plane-' + idx);
+                    if (pl) pl.setAttribute('visible', 'false');
+                    hint.textContent = '📷 请将摄像头对准识别图';
+                    hint.className = '';
+                    clearOverlayCard();
+                    if (currentAudio && !currentAudio.paused) {
+                        currentAudio.pause();
+                    }
+                });
+
+                sceneEl.appendChild(anchor);
+            }
+
+            // 当场景加载完后，确保所有 a-plane 的材质贴图被标记为需要更新
+            sceneEl.addEventListener('loaded', () => {
+                for (let i = 0; i < spots.length; i++) {
+                    const pl = document.getElementById('plane-' + i);
+                    if (pl && pl.getObject3D && pl.getObject3D('mesh')) {
+                        const mesh = pl.getObject3D('mesh');
+                        if (mesh.material && mesh.material.map) mesh.material.map.needsUpdate = true;
+                    }
+                }
+            });
+        });
+    </script>
+
+    <!-- A-Frame 场景 -->
+    <a-scene 
+        mindar-image="imageTargetSrc: ./target.mind; maxTrack: 5;"
+        vr-mode-ui="enabled: false"
+        device-orientation-permission-ui="enabled: false"
+        renderer="colorManagement: true;"
+    >
+        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+    </a-scene>
+
+    <!-- 版本号 -->
+    <div style="position:absolute; bottom:5px; right:10px; color:rgba(255,255,255,0.3); font-size:10px; z-index:5;">
+        v1.0 | 智影校园 AR
+    </div>
+</body>
+</html>
